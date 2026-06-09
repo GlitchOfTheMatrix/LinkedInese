@@ -1,16 +1,15 @@
-// service/translator.go
 package service
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"time"
 
 	"backend/config"
 )
-
-// --- Request structs (what we send to Groq) ---
 
 type groqMessage struct {
 	Role    string `json:"role"`
@@ -22,8 +21,6 @@ type groqRequest struct {
 	Messages []groqMessage `json:"messages"`
 }
 
-// --- Response structs (what Groq sends back) ---
-
 type groqChoice struct {
 	Message groqMessage `json:"message"`
 }
@@ -32,7 +29,10 @@ type groqResponse struct {
 	Choices []groqChoice `json:"choices"`
 }
 
-// buildPrompt returns the system and user prompts based on mode
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
 func buildPrompt(text, mode string) (system string, user string) {
 	switch mode {
 	case "translate":
@@ -50,15 +50,12 @@ func buildPrompt(text, mode string) (system string, user string) {
 	return system, user
 }
 
-// Translate calls Groq API and returns the translated text
 func Translate(cfg *config.Config, text, mode string) (string, error) {
-	// Build prompts based on mode
 	system, user := buildPrompt(text, mode)
 	if system == "" {
 		return "", fmt.Errorf("unknown mode: %s", mode)
 	}
 
-	// Build the request body
 	reqBody := groqRequest{
 		Model: "llama-3.1-8b-instant",
 		Messages: []groqMessage{
@@ -67,13 +64,11 @@ func Translate(cfg *config.Config, text, mode string) (string, error) {
 		},
 	}
 
-	// Encode the struct to JSON bytes
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to encode request: %w", err)
 	}
 
-	// Create the HTTP request
 	httpReq, err := http.NewRequest(
 		"POST",
 		"https://api.groq.com/openai/v1/chat/completions",
@@ -83,30 +78,29 @@ func Translate(cfg *config.Config, text, mode string) (string, error) {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set headers
 	httpReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	// Make the HTTP call
-	client := &http.Client{}
-	resp, err := client.Do(httpReq)
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("failed to call Groq API: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check status code
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read Groq response: %w", err)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("groq API returned status: %d", resp.StatusCode)
+		return "", fmt.Errorf("groq API returned status %d: %s", resp.StatusCode, string(respBytes))
 	}
 
-	// Read and decode the response
 	var groqResp groqResponse
-	if err := json.NewDecoder(resp.Body).Decode(&groqResp); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+	if err := json.Unmarshal(respBytes, &groqResp); err != nil {
+		return "", fmt.Errorf("failed to decode Groq response: %w", err)
 	}
 
-	// Extract the text from the first choice
 	if len(groqResp.Choices) == 0 {
 		return "", fmt.Errorf("groq returned no choices")
 	}
