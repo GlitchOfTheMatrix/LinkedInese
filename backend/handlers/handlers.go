@@ -3,7 +3,9 @@ package handlers
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 
 	"backend/config"
 	"backend/rateLimiter"
@@ -29,26 +31,28 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// getIP extracts the real client IP from the request
 func getIP(r *http.Request) string {
-	// When behind a proxy or load balancer, the real IP
-	// is in this header, not r.RemoteAddr
-	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-		return ip
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
 	}
-	return r.RemoteAddr
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
 }
 
 func NewTranslateHandler(cfg *config.Config, limiter *rateLimiter.Limiter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
-		// Check rate limit before doing anything else
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
 		ip := getIP(r)
 		allowed, err := limiter.Allow(ip)
 		if err != nil {
-			// Redis is down — fail open (allow the request)
-			// Better to serve than to block everyone
-			log.Printf("rate limiter error: %v", err)
+			log.Printf("rate limiter error for ip %s: %v", ip, err)
 		} else if !allowed {
 			writeJSON(w, http.StatusTooManyRequests, ErrorResponse{
 				Error: "too many requests, slow down",
@@ -56,7 +60,6 @@ func NewTranslateHandler(cfg *config.Config, limiter *rateLimiter.Limiter) http.
 			return
 		}
 
-		// Decode the request body
 		var req TranslateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, ErrorResponse{
@@ -65,8 +68,7 @@ func NewTranslateHandler(cfg *config.Config, limiter *rateLimiter.Limiter) http.
 			return
 		}
 
-		// Validate inputs
-		if req.Text == "" {
+		if strings.TrimSpace(req.Text) == "" {
 			writeJSON(w, http.StatusBadRequest, ErrorResponse{
 				Error: "text is required",
 			})
@@ -85,9 +87,9 @@ func NewTranslateHandler(cfg *config.Config, limiter *rateLimiter.Limiter) http.
 			return
 		}
 
-		// Call the service layer
 		result, err := service.Translate(cfg, req.Text, req.Mode)
 		if err != nil {
+			log.Printf("translate error: %v", err)
 			writeJSON(w, http.StatusInternalServerError, ErrorResponse{
 				Error: "something went wrong",
 			})
