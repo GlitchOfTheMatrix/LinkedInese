@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 
@@ -33,7 +38,6 @@ func main() {
 
 	cfg := config.Load()
 
-	// Create the rate limiter — fails fast if Redis is unreachable
 	limiter, err := rateLimiter.New(cfg)
 	if err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
@@ -43,8 +47,30 @@ func main() {
 	mux.HandleFunc("POST /translate", handlers.NewTranslateHandler(cfg, limiter))
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
 
-	log.Printf("Server starting on port %s", cfg.Port)
-	if err := http.ListenAndServe(":"+cfg.Port, corsMiddleware(mux)); err != nil {
-		log.Fatal(err)
+	server := &http.Server{
+		Addr:    ":" + cfg.Port,
+		Handler: corsMiddleware(mux),
 	}
+
+	go func() {
+		log.Printf("Server starting on port %s", cfg.Port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Forced shutdown: %v", err)
+	}
+
+	log.Println("Server stopped")
 }
