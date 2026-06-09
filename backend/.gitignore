@@ -1,0 +1,15 @@
+.env
+
+bin/
+
+coverage.out
+
+vendor/
+
+.idea/
+
+.vscode/
+
+*.log
+
+DockerFile
