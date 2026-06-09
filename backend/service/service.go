@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,7 +51,7 @@ func buildPrompt(text, mode string) (system string, user string) {
 	return system, user
 }
 
-func Translate(cfg *config.Config, text, mode string) (string, error) {
+func Translate(ctx context.Context, cfg *config.Config, text, mode string) (string, error) {
 	system, user := buildPrompt(text, mode)
 	if system == "" {
 		return "", fmt.Errorf("unknown mode: %s", mode)
@@ -69,7 +70,8 @@ func Translate(cfg *config.Config, text, mode string) (string, error) {
 		return "", fmt.Errorf("failed to encode request: %w", err)
 	}
 
-	httpReq, err := http.NewRequest(
+	httpReq, err := http.NewRequestWithContext(
+		ctx,
 		"POST",
 		"https://api.groq.com/openai/v1/chat/completions",
 		bytes.NewBuffer(bodyBytes),
